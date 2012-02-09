@@ -18,6 +18,8 @@ class Context {
     }
 
     def remove(key: String): Unit = _map.remove(key)
+    
+    def contains(key: String) = _map.contains(key)
   }
 
   private[exceptions] var pure = true
@@ -40,4 +42,6 @@ class Context {
     throw new RuntimeException("You are not allowed to modify the context in pure mode")
   else
     variantMap.remove(key)
+    
+  def contains(key: String) = variantMap.contains(key)
 }
