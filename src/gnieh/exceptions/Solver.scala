@@ -35,7 +35,7 @@ class Solver(val name: String) {
     }
 
     override def equals(other: Any) = other match {
-      case that: this.type => that.name == this.name
+      case that: AbstractRule[_] => that.name == this.name
       case _ => false
     }
 
@@ -141,10 +141,8 @@ class Solver(val name: String) {
 
   }
 
-  type R = Either[Rule, ParamRule[_]]
-
   // contains the rules for this solver indexed by their name
-  private val rules = new HashSet[R]
+  private val rules = new HashSet[AbstractRule[_]]
 
   // indicates if the current set of rules has been initialized
   private var initialized = false
@@ -160,9 +158,9 @@ class Solver(val name: String) {
     val applyingRules = rules.foldLeft(List[Rule]()) {
       (list, rule) =>
         rule match {
-          case Left(r) if r.appliesUnder(ctx) =>
+          case r: Rule if r.appliesUnder(ctx) =>
             r :: list
-          case Right(p) =>
+          case p: ParamRule[_] =>
             p.collection(ctx).foldLeft(list) { (res, value) =>
               if (p.appliesUnder(value)(ctx))
                 p(value) :: res
@@ -182,14 +180,6 @@ class Solver(val name: String) {
 
     ctx
   }
-
-  implicit def r2abstract(r: R): AbstractRule[_] = r match {
-    case Left(rule) => rule
-    case Right(param) => param
-  }
-
-  implicit def rule2left(rule: Rule) = Left(rule)
-  implicit def param2right[T](param: ParamRule[T]) = Right(param)
 
   /** Creates a new parameterized rule */
   def paramRule[T](name: String)(code: (T, Context) => Unit) = {
