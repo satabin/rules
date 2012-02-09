@@ -18,23 +18,38 @@ class Solver(val name: String) {
 
   def this() = this("solver$" + Solver.nextId)
 
-  /** A Rule */
-  class Rule private[Solver] (val name: String,
-    private[Solver] var code: Context => Unit,
-    private var cond: Context => Boolean = _ => true) {
+  abstract class AbstractRule(val name: String) {
+
+    private[Solver] var cond = (_: Context) => true
+
+    private[Solver] var visited: Boolean
+
+    private[this] var _desc: Option[String] = None
+
+    def description = _desc
+
+    /** Sets the optional description of this rule. */
+    def description(desc: String) = {
+      _desc = Option(desc)
+      this
+    }
+
+    override def equals(other: Any) = other match {
+      case that: this.type => that.name == this.name
+      case _ => false
+    }
+
+    override def hashCode = name.hashCode
+  }
+
+  /** A Rule without any parameter */
+  class Rule private[Solver] (name: String,
+    private[Solver] val code: Context => Unit) extends AbstractRule(name) {
 
     // by default a rule always applies
 
     // this rule applies except if at least one of these applies
     private[Solver] val except = new HashSet[Rule]
-    // this rule (if it applies) must be evaluated before these ones
-    private[Solver] val before = new HashSet[Rule]
-    // this rule (if it applies) must be evaluated after these ones
-    private[Solver] val after = new HashSet[Rule]
-
-    private[this] var _desc: Option[String] = None
-
-    def description = _desc
 
     private[Solver] var visited = false
     private var lastApplies = true
@@ -45,6 +60,17 @@ class Solver(val name: String) {
         lastApplies = !except.exists(_.appliesUnder(ctx)) && cond(ctx)
       }
       lastApplies
+    }
+
+    /**
+     * Adds a condition to specify when this rule can be evaluated.
+     * Once the rules are linearized, the condition is evaluated when
+     * resolving if depending rules applies. So it is evaluated before any
+     * rule code is evaluated.
+     */
+    def when(cond: Context => Boolean) = modify {
+      this.cond = cond
+      this
     }
 
     /** This rule applies, unless the given rule applies. */
@@ -61,19 +87,50 @@ class Solver(val name: String) {
       this
     }
 
-    /** This rule must be evaluated before the other ones. */
-    //    def before(rule: Rule, rest: Rule*): Rule = modify {
-    //      this.before += rule
-    //      this.before ++= rest
-    //      this
-    //    }
+  }
 
-    /** This rule must be evaluated after the other ones. */
-    //    def after(rule: Rule, rest: Rule*): Rule = modify {
-    //      this.after += rule
-    //      this.after ++= rest
-    //      this
-    //    }
+  /** A ParameterRule allows to define a rule over a collection of values */
+  class ParamRule[T] private[Solver] (name: String,
+    private[Solver] val code: (T, Context) => Unit) extends AbstractRule(name) {
+
+    type MyType = T
+
+    private val except = new HashSet[MyType => Rule]
+
+    private[Solver] var visited = false
+    private var lastApplies = true
+
+    def appliesUnder(value: MyType)(ctx: Context): Boolean = {
+      if (!visited) {
+        visited = true
+        lastApplies = !except.exists(_(value).appliesUnder(ctx)) && cond(ctx)
+      }
+      lastApplies
+    }
+
+    private[this] lazy val parameterless = (value: MyType) =>
+      new Rule(name + " with parameter: " + value, (ctx: Context) => code(value, ctx))
+
+    private[Solver] var collection: Context => Iterable[MyType] = (_: Context) => Nil
+
+    private[Solver] def iterate(ctx: Context) {
+      collection(ctx).foreach { value =>
+        code(value, ctx)
+      }
+    }
+
+    def apply(value: MyType) = parameterless(value)
+
+    def over(coll: Context => Iterable[T]) = modify {
+      collection = coll
+      this
+    }
+
+    def unless(rule: MyType => Rule, rest: MyType => Rule*) = modify {
+      except += rule
+      except ++= rest
+      this
+    }
 
     /**
      * Adds a condition to specify when this rule can be evaluated.
@@ -81,62 +138,43 @@ class Solver(val name: String) {
      * resolving if depending rules applies. So it is evaluated before any
      * rule code is evaluated.
      */
-    def when(cond: Context => Boolean): Rule = modify {
+    def when(cond: Context => Boolean) = modify {
       this.cond = cond
       this
     }
 
-    /** Sets the optional description of this rule. */
-    def description(desc: String): Rule = {
-      _desc = Option(desc)
-      this
-    }
-
-    override def equals(other: Any) = other match {
-      case that: Rule => that.name == this.name
-      case _ => false
-    }
-
-    override def hashCode = name.hashCode
-
   }
 
-  class LazyRule[T](name: String, create: T => Rule) {
-    rules.find(_.name == name) match {
-      case Some(rule) => rule
-      case None =>
-    }
-
-  }
-
-  class Rule1[T] private[Solver] (name: String,
-    code: (T, Context) => Unit,
-    cond: Context => Boolean = _ => true) {
-
-  }
+  type R = Either[Rule, ParamRule[_]]
 
   // contains the rules for this solver indexed by their name
-  private val rules = new HashSet[Rule]
+  private val rules = new HashSet[R]
 
   // indicates if the current set of rules has been initialized
   private var initialized = false
 
-  // rules are automatically added to the rule set by default
-  private var autoAdd = true
-
   /** Applies the given rule to the context */
   def apply(ctx: Context = new Context): Context = {
 
-    // TODO check cycles
+    // TODO check cycles in constraints!
 
     // first get the applying rules (in pure mode, the context may not be modified)
     ctx.pure = true
 
     val applyingRules = rules.foldLeft(List[Rule]()) {
       (list, rule) =>
-        if (rule.appliesUnder((ctx)))
-          rule :: list
-        else list
+        rule match {
+          case Left(r) if r.appliesUnder(ctx) =>
+            r :: list
+          case Right(p) =>
+            p.collection(ctx).foldLeft(list) { (res, value) =>
+              if (p.appliesUnder(value)(ctx))
+                p(value) :: res
+              else
+                res
+            }
+          case _ => list
+        }
     }
 
     // then execute the applying rules (context may now be modified)
@@ -149,48 +187,37 @@ class Solver(val name: String) {
     ctx
   }
 
-  def over[T](it: Context => Option[Iterable[T]])(create: T => Rule) = try {
+  implicit def r2abstract(r: R): AbstractRule = r match {
+    case Left(rule) => rule
+    case Right(param) => param
+  }
 
-    autoAdd = false
+  implicit def rule2left(rule: Rule) = Left(rule)
+  implicit def param2right[T](param: ParamRule[T]) = Right(param)
 
-    def code(ctx: Context) {
-      it(ctx) match {
-        case Some(set) => set.foreach { value =>
-          create(value)
-        }
-        case None => // do nothing
-      }
-    }
+  /** Creates a new parameterized rule */
+  def paramRule[T](name: String)(code: (T, Context) => Unit) = {
 
-    val rule = new Rule(name, code)
+    if (rules.exists(_.name == name))
+      throw new RuntimeException("Rule " + name + " already exists.")
+
+    val rule = new ParamRule(name, code)
+
     rules += rule
 
     rule
-  } finally {
-    autoAdd = true
   }
-
-  def rule1[T](name: String)(code: (T, Context) => Unit) =
-    new Rule1(name, code)
 
   /** Creates a new rule in this solver */
   def rule(name: String)(code: Context => Unit) = modify {
-    if (autoAdd && rules.exists(_.name == name))
+    if (rules.exists(_.name == name))
       throw new RuntimeException("Rule " + name + " already exists.")
 
     val rule = new Rule(name, code)
 
-    if (autoAdd)
-      rules += rule
+    rules += rule
 
     rule
-  }
-
-  def rule1(name: String) = new {
-    def foreach[T](v: T)(code: Context => Unit) = {
-      if (rules.exists(_.name == name))
-        throw new RuntimeException("Rule " + name + " already exists.")
-    }
   }
 
   // private methods
