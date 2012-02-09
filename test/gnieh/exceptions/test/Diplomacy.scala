@@ -13,9 +13,12 @@ class Diplomacy {
     _[Iterable[Move]]("moves", Nil)
   } unless (standoff1(_), standoff2(_))
 
-  lazy val standoff1 = paramRule[Move]("standoff1") { (move, ctx) =>
-    val f = force(move, ctx[Set[Support]]("supports", Set.empty[Support]))
-  }
+  lazy val standoff1 = paramRule[Move]("standoff1") { (move, ctx) => } when { (move, ctx) =>
+    val moves = ctx[Set[Move]]("moves", Set.empty[Move])
+    val supports = ctx[Set[Support]]("supports", Set.empty[Support])
+    val f = force(move, supports)
+    moves.exists(m => m != move && force(m, supports) >= f)
+  } description ""
 
   lazy val standoff2 = paramRule[Move]("standoff2") { (move, ctx) =>
 
