@@ -16,9 +16,28 @@ class Context {
         Some(s.asInstanceOf[T])
       case _ => None
     }
+
+    def remove(key: String): Unit = _map.remove(key)
   }
 
-  def apply[T: Manifest](key: String) = {
-    
+  private[exceptions] var pure = true
+
+  def apply[T: Manifest](key: String) =
+    variantMap(key)
+
+  def apply[T: Manifest](key: String, default: => T): T = apply(key) match {
+    case Some(v) => v
+    case None => default
   }
+
+  def update[T: Manifest](key: String, value: T) =
+    if (pure)
+      throw new RuntimeException("You are not allowed to modify the context in pure mode")
+    else
+      variantMap(key) = value
+
+  def remove(key: String) = if (pure)
+    throw new RuntimeException("You are not allowed to modify the context in pure mode")
+  else
+    variantMap.remove(key)
 }
